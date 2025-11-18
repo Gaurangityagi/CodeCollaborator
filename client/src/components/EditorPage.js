@@ -20,6 +20,7 @@ function EditorPage() {
   const [isCompileWindowOpen, setIsCompileWindowOpen] = useState(false);
   const [isCompiling, setIsCompiling] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState("python3");
+  const [roomLanguage, setRoomLanguage] = useState("python3");
 
   // canonical code store
   const codeRef = useRef("");
@@ -66,6 +67,17 @@ function EditorPage() {
         console.log("No saved code found for this room yet.");
       }
 
+      // Check if user is admin for this room
+      try {
+        const encodedUsername = encodeURIComponent(location.state.username.trim());
+        const adminResponse = await axios.get(`http://localhost:5000/is-admin/${roomId}/${encodedUsername}`);
+        if (adminResponse.data?.isAdmin) {
+          setIsAdmin(true);
+        }
+      } catch (err) {
+        console.log("Could not check admin status:", err);
+      }
+
       // init socket
       socketRef.current = initSocket();
       const socket = socketRef.current;
@@ -106,12 +118,13 @@ function EditorPage() {
       });
 
      
-      socket.on(ACTIONS.JOINED, ({ clients: joinedClients, username, socketId }) => {
+      socket.on(ACTIONS.JOINED, ({ clients: joinedClients, username, socketId, roomLanguage: lang }) => {
         setClients(joinedClients || []);
-        
+        if (lang) setRoomLanguage(lang);
+
         if (socketRef.current && socketId === socketRef.current.id) {
           setIsJoined(true);
-          
+
           if (codeRef.current) {
             socket.emit(ACTIONS.SYNC_CODE, { socketId: null, code: codeRef.current });
           }
@@ -134,12 +147,16 @@ function EditorPage() {
       socket.on(ACTIONS.CODE_CHANGE, ({ code }) => {
         if (code != null && codeRef.current !== code) {
           codeRef.current = code;
-   
+
           if (window.editorInstance) {
-           
+
             window.editorInstance.setValue(code);
           }
         }
+      });
+
+      socket.on(ACTIONS.LANGUAGE_CHANGE, ({ language }) => {
+        setRoomLanguage(language);
       });
 
       socket.on(ACTIONS.DISCONNECTED, ({ socketId, username }) => {
@@ -163,10 +180,10 @@ function EditorPage() {
      
       const haveInitialClients = Array.isArray(initialClientsFromState) && initialClientsFromState.length > 0;
       if (!cameFromApproval && !haveInitialClients) {
-        socket.emit(ACTIONS.JOIN, { roomId, username: location.state.username });
+        socket.emit(ACTIONS.JOIN, { roomId, username: location.state.username.trim() });
       } else {
         console.log("Skipping emit JOIN from EditorPage (arrived after approval or with initial clients).");
-        
+
       }
     };
 
@@ -223,7 +240,7 @@ function EditorPage() {
     try {
       const response = await axios.post("http://localhost:5000/compile", {
         code: codeRef.current,
-        language: selectedLanguage,
+        language: roomLanguage,
       });
       setOutput(response.data.output || JSON.stringify(response.data));
     } catch (err) {
@@ -292,7 +309,13 @@ function EditorPage() {
 
         <div className="col-md-10 text-light d-flex flex-column">
           <div className="bg-dark p-2 d-flex justify-content-end">
-            <select className="form-select w-auto" value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)}>
+            <select className="form-select w-auto" value={roomLanguage} onChange={(e) => {
+              const newLang = e.target.value;
+              setRoomLanguage(newLang);
+              if (socketRef.current) {
+                socketRef.current.emit(ACTIONS.LANGUAGE_CHANGE, { roomId, language: newLang });
+              }
+            }}>
               {LANGUAGES.map((lang) => <option key={lang} value={lang}>{lang}</option>)}
             </select>
           </div>
@@ -305,7 +328,7 @@ function EditorPage() {
                 onCodeChange={(code) => { codeRef.current = code; /* Editor itself emits CODE_CHANGE when isJoined */ }}
                 isJoined={isJoined}
                 username={location.state.username}
-                selectedLanguage={selectedLanguage}
+                selectedLanguage={roomLanguage}
               />
             </div>
 
@@ -323,7 +346,7 @@ function EditorPage() {
 
       <div className={`bg-dark text-light p-3 ${isCompileWindowOpen ? "d-block" : "d-none"}`} style={{ position: "fixed", bottom: 0, left: 0, right: 0, height: isCompileWindowOpen ? "30vh" : "0", transition: "height 0.3s ease-in-out", overflowY: "auto", zIndex: 1040 }}>
         <div className="d-flex justify-content-between align-items-center mb-3">
-          <h5 className="m-0">Compiler Output ({selectedLanguage})</h5>
+          <h5 className="m-0">Compiler Output ({roomLanguage})</h5>
           <div>
             <button className="btn btn-success me-2" onClick={runCode} disabled={isCompiling}>{isCompiling ? "Compiling..." : "Run Code"}</button>
             <button className="btn btn-secondary" onClick={toggleCompileWindow}>Close</button>

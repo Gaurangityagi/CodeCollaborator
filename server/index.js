@@ -179,6 +179,21 @@ app.get("/code/:roomId", async (req, res) => {
   }
 });
 
+app.get("/is-admin/:roomId/:username", async (req, res) => {
+  try {
+    const room = await Code.findOne({ roomId: req.params.roomId });
+    const trimmedUsername = decodeURIComponent(req.params.username).trim();
+    if (room && room.admin && room.admin.toLowerCase() === trimmedUsername.toLowerCase()) {
+      res.json({ isAdmin: true });
+    } else {
+      res.json({ isAdmin: false });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ isAdmin: false });
+  }
+});
+
 
 const languageConfig = {
   python3: { versionIndex: "3" },
@@ -226,8 +241,9 @@ const io = new Server(server, {
   },
 });
 
-const userSocketMap = {};  
-const latestCode = {};     
+const userSocketMap = {};
+const latestCode = {};
+const roomLanguages = {}; // Store room languages
 
 const getAllConnectedClients = (roomId) => {
   const room = io.sockets.adapter.rooms.get(roomId);
@@ -245,8 +261,9 @@ socket.on(ACTIONS.JOIN, async ({ roomId, username }) => {
   try {
     console.log("SERVER: JOIN received", { socketId: socket.id, roomId, username });
 
-    // store username for future (disconnect msgs etc.)
-    userSocketMap[socket.id] = username;
+    // store trimmed username for future (disconnect msgs etc.)
+    const trimmedUsername = username.trim();
+    userSocketMap[socket.id] = trimmedUsername;
 
     // fetch room document from DB (if exists)
     let roomDoc = null;
@@ -257,36 +274,43 @@ socket.on(ACTIONS.JOIN, async ({ roomId, username }) => {
       console.error("SERVER: DB lookup error for room:", roomId, dbErr);
     }
 
-if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
-  socket.join(roomId);
-  socket.isAdmin = true;
+    // If room exists and this user is the admin, allow direct join
+    if (roomDoc && roomDoc.admin && roomDoc.admin.toLowerCase() === trimmedUsername.toLowerCase()) {
+      socket.join(roomId);
+      socket.isAdmin = true;
 
-  // ensure latestCode cache has DB code if present
-  if (roomDoc.code) latestCode[roomId] = roomDoc.code;
+      // ensure latestCode cache has DB code if present
+      if (roomDoc.code) latestCode[roomId] = roomDoc.code;
 
-  // notify this socket it's admin (existing)
-  io.to(socket.id).emit("admin-status", { isAdmin: true });
+      // Set room language from DB or default
+      if (!roomLanguages[roomId]) {
+        roomLanguages[roomId] = roomDoc.language || "python3";
+      }
 
-  // --- NEW: send "join-approved" with the current clients list and the saved code
-  const clients = getAllConnectedClients(roomId);
-  io.to(socket.id).emit("join-approved", {
-    roomId,
-    clients,
-    code: roomDoc.code || "",
-    socketId: socket.id,
-    username: userSocketMap[socket.id] || username,
-  });
+      // notify this socket it's admin (existing)
+      io.to(socket.id).emit("admin-status", { isAdmin: true });
 
-  // also broadcast an ACTIONS.JOINED to the room (keeps clients list consistent)
-  io.to(roomId).emit(ACTIONS.JOINED, {
-    clients: getAllConnectedClients(roomId),
-    username,
-    socketId: socket.id,
-  });
+      // Send join-approved to client to complete the flow
+      io.to(socket.id).emit("join-approved", {
+        roomId,
+        clients: getAllConnectedClients(roomId),
+        code: roomDoc.code || "",
+        socketId: socket.id,
+        username: trimmedUsername,
+        roomLanguage: roomLanguages[roomId],
+      });
 
-  console.log(`Auto-admin join for ${username} into existing room ${roomId}`);
-  return;
-}
+      // also broadcast an ACTIONS.JOINED to the room (keeps clients list consistent)
+      io.to(roomId).emit(ACTIONS.JOINED, {
+        clients: getAllConnectedClients(roomId),
+        username: trimmedUsername,
+        socketId: socket.id,
+        roomLanguage: roomLanguages[roomId],
+      });
+
+      console.log(`Auto-admin join for ${trimmedUsername} into existing room ${roomId}`);
+      return;
+    }
 
     // If no exact DB admin match -> if room empty, first joiner becomes admin (persist)
     const existingClients = getAllConnectedClients(roomId);
@@ -296,13 +320,16 @@ if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
       socket.join(roomId);
       socket.isAdmin = true;
 
+      // Set default language for the room
+      roomLanguages[roomId] = "python3";
+
       try {
         await Code.findOneAndUpdate(
           { roomId },
-          { roomId, admin: username, code: latestCode[roomId] || "" },
+          { roomId, admin: trimmedUsername, code: latestCode[roomId] || "", language: roomLanguages[roomId] },
           { upsert: true, new: true }
         ).exec();
-        console.log(`SERVER: Stored ${username} as admin for room ${roomId} in DB`);
+        console.log(`SERVER: Stored ${trimmedUsername} as admin for room ${roomId} in DB`);
       } catch (dbErr) {
         console.error("SERVER: Failed to persist admin to DB:", dbErr);
       }
@@ -310,8 +337,9 @@ if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
       io.to(socket.id).emit("admin-status", { isAdmin: true });
       io.to(socket.id).emit(ACTIONS.JOINED, {
         clients: getAllConnectedClients(roomId),
-        username,
+        username: trimmedUsername,
         socketId: socket.id,
+        roomLanguage: roomLanguages[roomId],
       });
 
       return;
@@ -321,11 +349,11 @@ if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
     const adminSocketId = existingClients[0].socketId;
     io.to(adminSocketId).emit(ACTIONS.JOIN_REQUEST, {
       requesterId: socket.id,
-      requesterName: username,
+      requesterName: trimmedUsername,
       roomId,
     });
 
-    console.log(`SERVER: Emitted join-request for ${username} to admin socket ${adminSocketId}`);
+    console.log(`SERVER: Emitted join-request for ${trimmedUsername} to admin socket ${adminSocketId}`);
   } catch (err) {
     console.error("SERVER: Error in JOIN handler:", err);
   }
@@ -378,6 +406,7 @@ if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
         clients: getAllConnectedClients(roomId),
         username,
         socketId: requesterId,
+        roomLanguage: roomLanguages[roomId],
       });
 
       // Remove any pending UI request in admin's list
@@ -424,6 +453,23 @@ if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
     socket.in(roomId).emit("TOGGLE_TODO", { id });
   });
 
+  socket.on(ACTIONS.LANGUAGE_CHANGE, async ({ roomId, language }) => {
+    roomLanguages[roomId] = language;
+    socket.in(roomId).emit(ACTIONS.LANGUAGE_CHANGE, { language });
+
+    // Persist language change to DB
+    try {
+      await Code.findOneAndUpdate(
+        { roomId },
+        { language },
+        { upsert: false } // Don't create new document, only update existing
+      ).exec();
+      console.log(`SERVER: Updated language to ${language} for room ${roomId}`);
+    } catch (dbErr) {
+      console.error("SERVER: Failed to persist language change to DB:", dbErr);
+    }
+  });
+
   socket.on(ACTIONS.CURSOR_UPDATE, ({ roomId, cursorPos, username }) => {
     console.log("SERVER: Received CURSOR_UPDATE from", username, "in room", roomId, "at", cursorPos); // Debug log
     socket.in(roomId).emit(ACTIONS.CURSOR_UPDATE, { cursorPos, username });
@@ -436,6 +482,13 @@ if (roomDoc && roomDoc.admin && roomDoc.admin === username) {
         socketId: socket.id,
         username: userSocketMap[socket.id],
       });
+
+      // If the disconnecting user was admin and room becomes empty, don't delete admin from DB
+      // This allows admin to rejoin later
+      const remainingClients = getAllConnectedClients(roomId);
+      if (remainingClients.length === 0) {
+        console.log(`Room ${roomId} is now empty. Admin ${userSocketMap[socket.id]} can rejoin later.`);
+      }
     });
     delete userSocketMap[socket.id];
   });

@@ -1,10 +1,31 @@
 import React, { useState, useEffect } from "react";
+import axios from "axios";
 
 function TodoList({ socketRef, roomId, username }) {
   const [todos, setTodos] = useState([]);
   const [newTask, setNewTask] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Load existing todos from DB
+    const loadTodos = async () => {
+      try {
+        const response = await axios.get(`http://localhost:5000/todos/${roomId}`);
+        setTodos(response.data.map(todo => ({
+          text: todo.text,
+          username: todo.username,
+          id: todo.id,
+          completed: todo.completed
+        })));
+      } catch (err) {
+        console.log("No existing todos found.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadTodos();
+
     const socket = socketRef.current;
     if (!socket) return;
 
@@ -25,7 +46,7 @@ function TodoList({ socketRef, roomId, username }) {
       socket.off("NEW_TODO", handleNewTodo);
       socket.off("TOGGLE_TODO", handleToggleTodo);
     };
-  }, [socketRef.current]);
+  }, [socketRef.current, roomId]);
 
   const handleSubmit = (e) => {
     e.preventDefault();

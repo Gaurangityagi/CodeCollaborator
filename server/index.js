@@ -7,6 +7,8 @@ import axios from "axios";
 import dotenv from "dotenv";
 
 import Code from "./models/Code.js";
+import Todo from "./models/Todo.js";
+import Suggestion from "./models/Suggestion.js";
 import { ACTIONS } from "./Actions.js";
 
 dotenv.config();
@@ -83,7 +85,7 @@ app.post("/api/ai/explain", async (req, res) => {
       }
     );
     let explanation = response.data.choices[0].message.content.trim();
-    // Remove any "AI:" prefix, "AI Output:" prefix, and clean special characters
+    
     explanation = explanation.replace(/^AI Output.*$/gm, '').replace(/^AI:\s*/i, '').replace(/^AI\s*/i, '').replace(/['"]/g, '').replace(/\*\*/g, '').trim();
     res.json({ explanation });
   } catch (error) {
@@ -101,7 +103,7 @@ app.post("/api/ai/refactor", async (req, res) => {
       "https://22803-mcuvbnt1-eastus2.cognitiveservices.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview",
       {
         messages: [
-          { role: "system", content: "Refactor the following code snippet to improve readability, efficiency, and best practices. Provide only the refactored code without explanations." },
+          { role: "system", content: "Refactor the following code snippet to improve readability, efficiency, and best practices. Provide only the refactored code without explanations and no special characters or language names . Only ready to run code should be provided ." },
           { role: "user", content: codeSnippet }
         ],
         max_tokens: 500,
@@ -176,6 +178,26 @@ app.get("/code/:roomId", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ code: "" });
+  }
+});
+
+app.get("/todos/:roomId", async (req, res) => {
+  try {
+    const todos = await Todo.find({ roomId: req.params.roomId });
+    res.json(todos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json([]);
+  }
+});
+
+app.get("/suggestions/:roomId", async (req, res) => {
+  try {
+    const suggestions = await Suggestion.find({ roomId: req.params.roomId });
+    res.json(suggestions);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json([]);
   }
 });
 
@@ -441,16 +463,33 @@ socket.on(ACTIONS.JOIN, async ({ roomId, username }) => {
     }
   });
 
-  socket.on("ADD_SUGGESTION", ({ roomId, suggestion, username }) => {
-    socket.in(roomId).emit("NEW_SUGGESTION", { suggestion, username });
+  socket.on("ADD_SUGGESTION", async ({ roomId, suggestion, username }) => {
+    try {
+      const newSuggestion = new Suggestion({ roomId, text: suggestion, username });
+      await newSuggestion.save();
+      socket.in(roomId).emit("NEW_SUGGESTION", { suggestion, username });
+    } catch (err) {
+      console.error("Failed to save suggestion:", err);
+    }
   });
 
-  socket.on("ADD_TODO", ({ roomId, task, username, id }) => {
-    socket.in(roomId).emit("NEW_TODO", { task, username, id });
+  socket.on("ADD_TODO", async ({ roomId, task, username, id }) => {
+    try {
+      const newTodo = new Todo({ roomId, id, text: task, username, completed: false });
+      await newTodo.save();
+      socket.in(roomId).emit("NEW_TODO", { task, username, id });
+    } catch (err) {
+      console.error("Failed to save todo:", err);
+    }
   });
 
-  socket.on("TOGGLE_TODO", ({ roomId, id }) => {
-    socket.in(roomId).emit("TOGGLE_TODO", { id });
+  socket.on("TOGGLE_TODO", async ({ roomId, id }) => {
+    try {
+      await Todo.findOneAndUpdate({ roomId, id }, { completed: true });
+      socket.in(roomId).emit("TOGGLE_TODO", { id });
+    } catch (err) {
+      console.error("Failed to toggle todo:", err);
+    }
   });
 
   socket.on(ACTIONS.LANGUAGE_CHANGE, async ({ roomId, language }) => {

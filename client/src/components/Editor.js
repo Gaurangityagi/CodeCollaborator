@@ -238,8 +238,7 @@ function Editor({ socketRef, roomId, onCodeChange, isJoined, username, selectedL
   const showAISuggestion = async (cm) => {
     try {
       const code = cm.getValue();
-      // Use the selectedLanguage prop passed from EditorPage
-      const suggestions = await aiSuggest(code, selectedLanguage);
+      const suggestions = await aiSuggest(code);
       if (!suggestions || !suggestions.length) return;
 
       // Create a custom hint function that shows suggestions in a dropdown
@@ -305,6 +304,10 @@ function Editor({ socketRef, roomId, onCodeChange, isJoined, username, selectedL
       const data = await res.json();
       if (data.refactoredCode) {
         editorRef.current.setValue(data.refactoredCode);
+        // Emit the refactored code to sync with other users in the room
+        if (socketRef && socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit(ACTIONS.CODE_CHANGE, { roomId, code: data.refactoredCode });
+        }
         alert("Code refactored successfully!");
       } else {
         alert("Unable to refactor this code.");

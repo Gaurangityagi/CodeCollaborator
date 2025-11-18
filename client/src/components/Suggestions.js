@@ -1,10 +1,30 @@
 import React, { useState, useEffect } from "react";
+import axios from "axios";
 
 function Suggestions({ socketRef, roomId, username }) {
   const [suggestions, setSuggestions] = useState([]);
   const [newSuggestion, setNewSuggestion] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Load existing suggestions from DB
+    const loadSuggestions = async () => {
+      try {
+        const response = await axios.get(`http://localhost:5000/suggestions/${roomId}`);
+        setSuggestions(response.data.map(suggestion => ({
+          text: suggestion.text,
+          username: suggestion.username,
+          timestamp: new Date(suggestion.timestamp)
+        })));
+      } catch (err) {
+        console.log("No existing suggestions found.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSuggestions();
+
     const socket = socketRef.current;
     if (!socket) return;
 
@@ -17,7 +37,7 @@ function Suggestions({ socketRef, roomId, username }) {
     return () => {
       socket.off("NEW_SUGGESTION", handleNewSuggestion);
     };
-  }, [socketRef.current]);
+  }, [socketRef.current, roomId]);
 
   const handleSubmit = (e) => {
     e.preventDefault();

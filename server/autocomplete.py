@@ -2,8 +2,18 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from transformers import pipeline
 
-# Load a code-specific model for better code completion
-generator = pipeline("text-generation", model="Salesforce/codegen-350M-mono")
+# Use deepseek-coder for better code completion (no compatibility issues)
+model_name = "deepseek-ai/deepseek-coder-1.3b-base"
+
+print("Loading model... This may take a minute on first run.")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float32,  # Use float32 for CPU
+    low_cpu_mem_usage=True
+)
+model.eval()  # Set to evaluation mode
+print("Model loaded successfully!")
 
 app = Flask(__name__)
 CORS(app)
